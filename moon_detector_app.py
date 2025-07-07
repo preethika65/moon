@@ -1,86 +1,86 @@
 import streamlit as st
-import cv2
 import numpy as np
 import pandas as pd
+import cv2
+import rasterio
 from PIL import Image
 import tempfile
+import os
 
-st.set_page_config(page_title="Moon Surface Feature Detector", layout="centered")
-st.title("🌕 Moon Surface Feature Detector")
+st.set_page_config(page_title="Moon Feature Detector", layout="centered")
+st.title("🌕 Moon Feature Detector (Boulders = Big Rocks)")
 
 st.markdown("""
-Detect **Boulders (🔵)** and **Landslides (🔴)** on Moon surface images.  
-Upload 1 or 2 images to detect and compare features.  
-Get **annotated output** and **CSV geometry reports**.
+Upload Chandrayaan-style images (.tif, .img, .jpg, .png) to detect:
+- 🔵 **Boulders**: Big round rocks
+- 🔴 **Landslides**: Large irregular features
+
+Results include annotations + CSV download.
 """)
 
-uploaded_image = st.file_uploader("📁 Upload First Image (Current)", type=["jpg", "jpeg", "png"])
-compare_image = st.file_uploader("📁 Upload Second Image (Older - Optional)", type=["jpg", "jpeg", "png"])
+uploaded = st.file_uploader("📁 Upload Lunar Image (TMC/OHRC/DTM)", type=["tif", "img", "jpg", "jpeg", "png"])
 
-def process_image(img_bytes):
-    np_img = np.asarray(bytearray(img_bytes.read()), dtype=np.uint8)
-    img = cv2.imdecode(np_img, cv2.IMREAD_GRAYSCALE)
+def read_geotiff(file):
+    with rasterio.open(file) as src:
+        array = src.read(1)
+        norm_img = ((array - array.min()) / (array.max() - array.min()) * 255).astype('uint8')
+    return norm_img
+
+def detect_features(img):
     img = cv2.resize(img, (800, 800))
-    processed = cv2.equalizeHist(cv2.GaussianBlur(img, (5, 5), 0))
-    edges = cv2.Canny(processed, 50, 150)
-    return img, edges
+    blurred = cv2.GaussianBlur(img, (5, 5), 0)
+    equalized = cv2.equalizeHist(blurred)
+    edges = cv2.Canny(equalized, 50, 150)
 
-def detect_features(img, edges):
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     output = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     data = []
-    boulder_id = landslide_id = 0
+    b_id = l_id = 0
 
     for cnt in contours:
         area = cv2.contourArea(cnt)
         perimeter = cv2.arcLength(cnt, True)
-        if perimeter == 0: continue
+        if perimeter == 0:
+            continue
         circularity = 4 * np.pi * area / (perimeter * perimeter)
         x, y, w, h = cv2.boundingRect(cnt)
         cx, cy = x + w // 2, y + h // 2
 
-        if 100 < area < 2000 and 0.6 < circularity <= 1.3:
-            boulder_id += 1
+        if area > 2500 and 0.5 < circularity <= 1.2:
+            b_id += 1
             cv2.drawContours(output, [cnt], -1, (255, 0, 0), 2)
-            cv2.putText(output, f"B{boulder_id}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
-            data.append(["Boulder", boulder_id, cx, cy, w, h, area, round(circularity, 2)])
+            cv2.putText(output, f"B{b_id}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 0, 0), 1)
+            data.append(["Boulder", b_id, cx, cy, w, h, area, round(circularity, 2)])
         elif area > 3000 and circularity < 0.4:
-            landslide_id += 1
+            l_id += 1
             cv2.drawContours(output, [cnt], -1, (0, 0, 255), 2)
-            cv2.putText(output, f"L{landslide_id}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
-            data.append(["Landslide", landslide_id, cx, cy, w, h, area, round(circularity, 2)])
+            cv2.putText(output, f"L{l_id}", (x, y - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 255), 1)
+            data.append(["Landslide", l_id, cx, cy, w, h, area, round(circularity, 2)])
 
     return output, data
 
-if uploaded_image:
-    img1, edges1 = process_image(uploaded_image)
-    output1, features1 = detect_features(img1, edges1)
-    
-    st.image(output1, caption="🛰️ Annotated Moon Image", channels="BGR")
-    df1 = pd.DataFrame(features1, columns=["Type", "ID", "X", "Y", "Length (px)", "Diameter (px)", "Area (px²)", "Circularity"])
-    st.dataframe(df1)
-    
-    # Downloads
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
-        cv2.imwrite(tmp_img.name, output1)
-        st.download_button("📥 Download Annotated Image", open(tmp_img.name, "rb"), "moon_annotated.jpg", "image/jpeg")
+if uploaded:
+    ext = os.path.splitext(uploaded.name)[-1].lower()
+    try:
+        if ext in ['.tif', '.img']:
+            img_gray = read_geotiff(uploaded)
+        else:
+            bytes_img = np.asarray(bytearray(uploaded.read()), dtype=np.uint8)
+            img_gray = cv2.imdecode(bytes_img, cv2.IMREAD_GRAYSCALE)
 
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode='w', newline='') as tmp_csv:
-        df1.to_csv(tmp_csv.name, index=False)
-        st.download_button("📑 Download Detection Data (CSV)", open(tmp_csv.name, "rb"), "moon_features.csv", "text/csv")
+        output_img, features = detect_features(img_gray)
+        st.image(output_img, caption="🛰️ Annotated Terrain", channels="BGR")
 
-    # Temporal comparison if second image provided
-    if compare_image:
-        st.subheader("📊 Temporal Comparison")
-        img2, edges2 = process_image(compare_image)
-        _, features2 = detect_features(img2, edges2)
-        df2 = pd.DataFrame(features2, columns=["Type", "ID", "X", "Y", "Length (px)", "Diameter (px)", "Area (px²)", "Circularity"])
-        
-        # Basic comparison based on count
-        st.write(f"📌 Previous Image: {df2.Type.value_counts().to_dict()}")
-        st.write(f"📌 Current Image: {df1.Type.value_counts().to_dict()}")
+        df = pd.DataFrame(features, columns=["Type", "ID", "X", "Y", "Length", "Diameter", "Area", "Circularity"])
+        st.dataframe(df)
 
-        new_boulders = df1[df1["Type"] == "Boulder"].shape[0] - df2[df2["Type"] == "Boulder"].shape[0]
-        new_landslides = df1[df1["Type"] == "Landslide"].shape[0] - df2[df2["Type"] == "Landslide"].shape[0]
-        st.info(f"🪨 Boulder change: {'+' if new_boulders >= 0 else ''}{new_boulders}")
-        st.info(f"⛰️ Landslide change: {'+' if new_landslides >= 0 else ''}{new_landslides}")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
+            cv2.imwrite(tmp_img.name, output_img)
+            st.download_button("📸 Download Annotated Image", open(tmp_img.name, "rb"), "moon_annotated.jpg", "image/jpeg")
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".csv", mode="w", newline='') as tmp_csv:
+            df.to_csv(tmp_csv.name, index=False)
+            st.download_button("📊 Download Feature Data (CSV)", open(tmp_csv.name, "rb"), "moon_features.csv", "text/csv")
+
+    except Exception as e:
+        st.error(f"❌ Error processing image: {e}")
