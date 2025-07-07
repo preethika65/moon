@@ -1,6 +1,6 @@
 streamlit
-opencv-python
 numpy
 pandas
 pillow
 rasterio
+scikit-image
