@@ -1,6 +1,5 @@
 streamlit
+opencv-python-headless
 numpy
 pandas
 pillow
-rasterio
-scikit-image
